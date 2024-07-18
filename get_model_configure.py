@@ -6,8 +6,8 @@ import time
 import os
 import csv
 import re
-from torchsummary import summary
 from ptflops import get_model_complexity_info
+from typing import Tuple, Any, Callable
 
 def load_model(model_path, device):
     model = torch.load(model_path, map_location=device)
@@ -15,8 +15,8 @@ def load_model(model_path, device):
     model.eval()
     return model
 
-def load_cifar10_data(data_folder, model_folder):
-    if model_folder == 'vit_b_16':
+def load_cifar10_data(data_folder, model_folder, batch_size, vit_16_using):
+    if vit_16_using:
         transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
@@ -29,14 +29,47 @@ def load_cifar10_data(data_folder, model_folder):
         ])
 
     test_set = datasets.CIFAR10(root=data_folder, train=False, download=False, transform=transform)
-    test_loader = DataLoader(test_set, batch_size=100, shuffle=False, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
     return test_loader
 
-def test_model_inference_and_accuracy(model, device, data_loader):
+def test_single_image_inference(model, device, data_folder, model_folder, vit_16_using):
+    # Load one image from CIFAR10 dataset
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)) if vit_16_using else transforms.Resize((32, 32)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2470, 0.2435, 0.2616])
+    ])
+    
+    test_set = datasets.CIFAR10(root=data_folder, train=False, download=False, transform=transform)
+    test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
+    
+    # Warm-up run
+    # for _ in range(10):
+    #     for images, _ in test_loader:
+    #         images = images.to(device)
+    #         _ = model(images)
+    #         break
+    
+    # Get a single image
+    single_image, _ = next(iter(test_loader))
+    single_image = single_image.to(device)
+
+    # Measure single image inference time
+    with torch.no_grad():
+        torch.cuda.synchronize()  # Synchronize CUDA operations
+        start_time = time.time()
+        _ = model(single_image)
+        torch.cuda.synchronize()  # Synchronize CUDA operations
+        end_time = time.time()
+
+    single_image_inference_time = (end_time - start_time) * 1000  # Convert to milliseconds
+
+    return single_image_inference_time
+
+def test_model_accuracy(model, device, data_loader):
     correct = 0
     total = 0
     total_inference_time = 0
-    single_image_times = []
 
     with torch.no_grad():
         for images, labels in data_loader:
@@ -44,21 +77,14 @@ def test_model_inference_and_accuracy(model, device, data_loader):
             start_time = time.time()
             outputs = model(images)
             end_time = time.time()
-            
-            inference_time = (end_time - start_time)
-            total_inference_time += inference_time
-            single_image_times.extend([inference_time / images.size(0)] * images.size(0))
-            
+            total_inference_time += (end_time - start_time)
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
 
     accuracy = 100 * correct / total
-    avg_single_image_time = total_inference_time / total
-    
-    return total_inference_time, accuracy, avg_single_image_time
-
-
+    avg_inference_time_per_image = (total_inference_time / total) * 1000  # Convert to milliseconds
+    return accuracy, avg_inference_time_per_image, total_inference_time, total
 
 def get_model_size(model):
     param_size = 0
@@ -75,12 +101,12 @@ def get_macs_and_params(model, input_size):
                                              print_per_layer_stat=False, verbose=False)
     return macs, params
 
-def write_result_to_csv(model_folder, variant, inference_time, accuracy, model_size, macs, avg_single_image_time, models_dir):
+def write_result_to_csv(model_folder, variant, single_image_inference_time, accuracy, avg_inference_time_per_image, model_size, macs, total_inference_time, total_labels, models_dir):
     filename = os.path.join(models_dir, model_folder, f"{model_folder}_inference_results.csv")
     file_exists = os.path.exists(filename)
     
     with open(filename, 'a', newline='') as csvfile:
-        fieldnames = ['Model', 'Variant', 'Pruning Amount', 'Inference Time (s)', 'Avg Single Image Time (s)', 'Accuracy (%)', 'Model Size (MB)', 'MACs']
+        fieldnames = ['Model', 'Variant', 'Pruning Amount', 'Single Image Inference Time (ms)', 'Accuracy (%)', 'Avg Inference Time per Image (ms)', 'Model Size (MB)', 'MACs', 'Total Inference Time (s)', 'Total Labels']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         
         if not file_exists:
@@ -94,13 +120,14 @@ def write_result_to_csv(model_folder, variant, inference_time, accuracy, model_s
             'Model': model_folder, 
             'Variant': variant, 
             'Pruning Amount': pruning_amount, 
-            'Inference Time (s)': f"{inference_time:.3f}", 
-            'Avg Single Image Time (s)': f"{avg_single_image_time:.6f}",
+            'Single Image Inference Time (ms)': f"{single_image_inference_time:.3f}", 
             'Accuracy (%)': accuracy,
+            'Avg Inference Time per Image (ms)': f"{avg_inference_time_per_image:.3f}",
             'Model Size (MB)': f"{model_size:.3f}",
-            'MACs': macs
+            'MACs': macs,
+            'Total Inference Time (s)': f"{total_inference_time:.3f}",
+            'Total Labels': total_labels
         })
-
 
 def scan_models(models_dir):
     model_details = {}
@@ -110,25 +137,45 @@ def scan_models(models_dir):
             model_details[folder] = [file for file in os.listdir(folder_path) if file.endswith('.pth')]
     return model_details
 
-def main(models_dir, data_dir):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def preload_models_and_data(models_dir, data_dir, device, batch_size):
     model_details = scan_models(models_dir)
+    
+    preloaded_models = {}
+    preloaded_datasets = {}
 
     for folder, files in model_details.items():
-        test_data_loader = load_cifar10_data(data_dir, folder)
+        preloaded_models[folder] = {}
         for file_name in files:
             model_path = os.path.join(models_dir, folder, file_name)
             model = load_model(model_path, device)
-            total_inference_time, accuracy, avg_single_image_time = test_model_inference_and_accuracy(
-                model, device, test_data_loader
-            )
+            preloaded_models[folder][file_name] = model
+        
+        test_data_loader = load_cifar10_data(data_dir, folder, batch_size, folder == 'vit_b_16')
+        preloaded_datasets[folder] = test_data_loader
+
+    return preloaded_models, preloaded_datasets
+
+def main(models_dir, data_dir):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size = 100  # For full test set accuracy
+    preloaded_models, preloaded_datasets = preload_models_and_data(models_dir, data_dir, device, batch_size)
+
+    # Measure inference time for a single image for all models first
+    for folder, models in preloaded_models.items():
+        for file_name, model in models.items():
+            # Measure inference time for a single image
+            single_image_inference_time = test_single_image_inference(model, device, data_dir, folder, folder == 'vit_b_16')
+            
+            # Measure accuracy and average inference time using the full test set
+            full_test_loader = preloaded_datasets[folder]
+            accuracy, avg_inference_time_per_image, total_inference_time, total_labels = test_model_accuracy(model, device, full_test_loader)
+            
             model_size = get_model_size(model)
             macs, _ = get_macs_and_params(model, (3, 224, 224) if folder == 'vit_b_16' else (3, 32, 32))
             write_result_to_csv(
-                folder, file_name, total_inference_time, accuracy, model_size, macs, avg_single_image_time, models_dir
+                folder, file_name, single_image_inference_time, accuracy, avg_inference_time_per_image, model_size, macs, total_inference_time, total_labels, models_dir
             )
-            print(f"Avg single image inference time: {avg_single_image_time:.6f} seconds")
-
+            print(f"Single image inference time: {single_image_inference_time:.3f} ms, Accuracy: {accuracy:.2f}%, Avg Inference Time per Image: {avg_inference_time_per_image:.3f} ms, Total Inference Time: {total_inference_time:.3f} s, Total Labels: {total_labels}")
 
 if __name__ == "__main__":
     models_directory = "./models"
