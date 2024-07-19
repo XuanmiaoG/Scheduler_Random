@@ -1,7 +1,0 @@
-Model,Variant,Pruning Amount,Inference Time (s),Avg Single Image Time (s),Accuracy (%),Model Size (MB),MACs
-vit_b_16,vit_b_16_pruned_0.04.pth,0.04,0.033,0.032794,100.0,321.564,17157926110
-vit_b_16,vit_b_16_pruned_0.36.pth,0.36,0.031,0.030540,100.0,241.139,12983338285
-vit_b_16,vit_b_16_pruned_0.48.pth,0.48,0.014,0.013955,100.0,167.486,9094792378
-vit_b_16,vit_b_16_pruned_0.64.pth,0.64,0.014,0.013686,100.0,29.954,1698887080
-vit_b_16,vit_b_16_pruned_0.76.pth,0.76,0.015,0.014882,100.0,1.956,126506548
-vit_b_16,vit_b_16_original.pth,original,0.008,0.008301,100.0,330.229,17606030584

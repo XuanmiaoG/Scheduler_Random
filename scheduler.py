@@ -78,16 +78,16 @@ def check_gpu_resources(threshold=0.9):
     pynvml.nvmlShutdown()
     return False
 
-def monitor_scheduler(start_time, task_waitlist, task_scheduler_queue, interval=20):
-    while True:
-        current_time = (time.time() - start_time) * 1000  # Convert to milliseconds
-        for task in task_waitlist[:]:  # Create a copy of the list for safe iteration
-            if task.start_time <= current_time:
-                task.priority = float('inf')  # Assign a random priority
-                task_scheduler_queue.append(task)
-                task_waitlist.remove(task)
-        num_tasks_remaining = len(task_scheduler_queue)
-        time.sleep(interval)
+# def monitor_scheduler(start_time, task_waitlist, task_scheduler_queue, interval=20):
+#     while True:
+#         current_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+#         for task in task_waitlist[:]:  # Create a copy of the list for safe iteration
+#             if task.start_time <= current_time:
+#                 task.priority = float('inf')  # Assign a random priority
+#                 task_scheduler_queue.append(task)
+#                 task_waitlist.remove(task)
+#         num_tasks_remaining = len(task_scheduler_queue)
+#         time.sleep(interval)
 
 def read_task_definitions(csv_file_path):
     tasks = []
@@ -217,7 +217,7 @@ def main(task_definitions_file, models_dir, results_file):
     results = []
 
     with open(results_file, 'w', newline='') as csvfile:
-        fieldnames = ['task_id', 'model_type', 'dataset', 'batch_size', 'start_time', 'actual_start_time', 'deadline', 'elapsed_time_ms', 'missed_deadline', 'model_variant', 'pruning_amount', 'data_size']
+        fieldnames = ['task_id', 'model_type', 'dataset', 'batch_size', 'start_time', 'actual_start_time', 'deadline', 'elapsed_time_ms', 'missed_deadline', 'pruning_amount', 'data_size']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
 
@@ -228,9 +228,28 @@ def main(task_definitions_file, models_dir, results_file):
     # Preload models and data
     models, preloaded_datasets = preload_models_and_data(models_dir, './data', device, streams)
 
+    scheduler_event = threading.Event()
+    stop_event = threading.Event()
+
+    def scheduler_monitor(start_time, task_waitlist, task_scheduler_queue):
+        while not stop_event.is_set():
+            current_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+            for task in task_waitlist[:]:  # Create a copy of the list for safe iteration
+                if task.start_time <= current_time:
+                    task.priority = 1  # Assign a random priority
+                    task_scheduler_queue.append(task)
+                    task_waitlist.remove(task)
+                    scheduler_event.set()  # Trigger the event when a new task is added
+            if not task_waitlist and not task_scheduler_queue:
+                stop_event.set()  # Signal to stop when no more tasks to process
+                scheduler_event.set()
+            else:
+                scheduler_event.clear()
+            time.sleep(0.01)  # Short sleep interval to avoid busy waiting
+
     # Start the scheduler monitor
     scheduler_start_time = time.time()
-    monitor_thread = threading.Thread(target=monitor_scheduler, args=(scheduler_start_time, task_waitlist, task_scheduler_queue))
+    monitor_thread = threading.Thread(target=scheduler_monitor, args=(scheduler_start_time, task_waitlist, task_scheduler_queue))
     monitor_thread.daemon = True
     monitor_thread.start()
 
@@ -238,14 +257,10 @@ def main(task_definitions_file, models_dir, results_file):
         futures = []
         current_high_priority_task = None
 
-        while task_waitlist or task_scheduler_queue or futures:
-            current_time = (time.time() - scheduler_start_time) * 1000
+        while not stop_event.is_set() or futures:
+            scheduler_event.wait()  # Wait for the event to be set
 
-            for task in task_waitlist[:]:
-                if task.start_time <= current_time:
-                    task.priority = float('inf')  # Assign random priority
-                    task_scheduler_queue.append(task)
-                    task_waitlist.remove(task)
+            current_time = (time.time() - scheduler_start_time) * 1000
 
             if task_scheduler_queue:
                 if current_high_priority_task is None:
@@ -276,8 +291,13 @@ def main(task_definitions_file, models_dir, results_file):
                         current_high_priority_task = None
                     results.append(task)
                     futures.remove(future)
-            # very important metric now i don't know how to change 
-            time.sleep(0.008)
+
+            # Perform warm-up during idle times
+            if not futures and not task_scheduler_queue and check_gpu_resources():
+                for model_type, variants in models.items():
+                    for pruning_amount, model in variants.items():
+                        single_image_loader = preloaded_datasets[model_type]['single_image_loader']
+                        warm_up_model(model, create_data_loader_from_preloaded(single_image_loader, 1), device, streams)
 
         total_tasks = len(results)
         missed_count = sum(1 for result in results if result.missed_deadline)
@@ -303,4 +323,4 @@ def main(task_definitions_file, models_dir, results_file):
         print(f"Deadline Miss Rate: {deadline_miss_rate:.2f}%")
 
 if __name__ == "__main__":
-    main('./task_set2.csv', './models', './results.csv')
+    main('./task_set.csv', './models', './results.csv')

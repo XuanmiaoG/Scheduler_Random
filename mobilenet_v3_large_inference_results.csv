@@ -1,7 +1,0 @@
-Model,Variant,Pruning Amount,Inference Time (s),Avg Single Image Time (s),Accuracy (%),Model Size (MB),MACs
-mobilenet_v3_large,mobilenet_v3_large_original.pth,original,0.272,0.272163,100.0,21.010,8664000
-mobilenet_v3_large,mobilenet_v3_large_pruned_0.56.pth,0.56,0.110,0.110357,0.0,4.998,2127914
-mobilenet_v3_large,mobilenet_v3_large_pruned_0.6.pth,0.6,0.105,0.104999,0.0,3.973,1808561
-mobilenet_v3_large,mobilenet_v3_large_pruned_0.72.pth,0.72,0.111,0.110522,0.0,1.415,950922
-mobilenet_v3_large,mobilenet_v3_large_pruned_0.76.pth,0.76,0.100,0.099684,0.0,0.945,750323
-mobilenet_v3_large,mobilenet_v3_large_pruned_0.8.pth,0.8,0.108,0.107651,0.0,0.602,594742

@@ -1,7 +1,0 @@
-Model,Variant,Pruning Amount,Inference Time (s),Avg Single Image Time (s),Accuracy (%),Model Size (MB),MACs
-vgg16,vgg16_original.pth,original,0.037,0.036687,100.0,527.792,437936104
-vgg16,vgg16_pruned_0.04.pth,0.04,0.041,0.041102,100.0,464.003,369996851
-vgg16,vgg16_pruned_0.24.pth,0.24,0.041,0.041065,100.0,277.722,182781552
-vgg16,vgg16_pruned_0.44.pth,0.44,0.039,0.039083,0.0,164.208,104212253
-vgg16,vgg16_pruned_0.72.pth,0.72,0.047,0.046816,100.0,56.066,46236018
-vgg16,vgg16_pruned_0.8.pth,0.8,0.036,0.036377,0.0,33.035,33389812
